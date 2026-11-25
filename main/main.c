@@ -7,13 +7,13 @@
 #include "pid_ctrl.h"
 #include "esp_random.h"
 #include <math.h>
+#include "pressure.h"
 
-// Simulated plant parameters
-static float simulated_flow = 0.0f;
-
-#define FLOW_PER_HZ             0.05f
-#define DISTURBANCE_PROBABILITY 5   // 5% chance per PID cycle
-#define DISTURBANCE_MAGNITUDE  30.0f
+// Sensor variables
+static float adc_voltage;
+static float sensor_voltage;
+static float pressure_mpa;
+static QueueHandle_t pressure_queue;
 
 static const char *TAG = "PID_CONTROLLER";
 
@@ -30,19 +30,7 @@ static float target_flow = 100.0f;
 // PID controller handle
 static pid_ctrl_block_handle_f_t pid_ctrl = NULL;
 
-
-// --------------------------------------------------
-// 1. SENSOR READING
-// --------------------------------------------------
-float read_flow_sensor(void)
-{
-    return simulated_flow;
-}
-
-
-// --------------------------------------------------
-// 2. MOTOR CONTROL
-// --------------------------------------------------
+// Motor Control
 void set_motor_frequency(float frequency)
 {
     static float previous_frequency = 0.0f;
@@ -83,10 +71,7 @@ void set_motor_frequency(float frequency)
              simulated_flow);
 }
 
-
-// --------------------------------------------------
-// 3. PID INITIALIZATION
-// --------------------------------------------------
+// PID Init
 void pid_initialize(void)
 {
     pid_ctrl_parameter_f_t pid_parameters = {
@@ -115,9 +100,7 @@ void pid_initialize(void)
 }
 
 
-// --------------------------------------------------
-// 4. PID CONTROL TASK
-// --------------------------------------------------
+// PID Tasks
 void pid_task(void *pvParameters)
 {
     float measured_flow;
@@ -129,7 +112,11 @@ void pid_task(void *pvParameters)
     while (1)
     {
         // Read actual flow rate
-        measured_flow = read_flow_sensor();
+        measured_flow = xQueuePeek(
+            pressure_queue,
+            &pressure_mpa,
+            0
+        );
 
         // Calculate error
         error = target_flow - measured_flow;
@@ -158,19 +145,61 @@ void pid_task(void *pvParameters)
     }
 }
 
+// Sensor task
+void sensor_task(void *pvParameters)
+{
+    while (1)
+    {
+        esp_err_t ret = ads1115_read_voltage(&adc_voltage);
 
-// --------------------------------------------------
-// 5. MAIN APPLICATION
-// --------------------------------------------------
+        if (ret == ESP_OK)
+        {
+            sensor_voltage = pressure_sensor_get_voltage(adc_voltage);      // Compensate for voltage divider
+            pressure_mpa = pressure_sensor_get_mpa(sensor_voltage);         // Convert to pressure
+
+            xQueueOverwrite(pressure_queue, &pressure_mpa);
+        }
+        else
+        {
+            ESP_LOGE(TAG, "ADS1115 read failed: %s", esp_err_to_name(ret));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+        
+    }
+}
+
+
 void app_main(void)
 {
-    // Initialize PID controller
+    // Initialize 
     pid_initialize();
+    i2c_master_init();
+    ads1115_init();
+    pressure_queue = xQueueCreate(1, sizeof(float));
 
-    // Start PID task
+    // Start task
     xTaskCreate(
         pid_task,
         "pid_task",
+        4096,
+        NULL,
+        5,
+        NULL
+    );
+
+    xTaskCreate(
+        sensor_task,
+        "sensor_task",
+        4096,
+        NULL,
+        5,
+        NULL
+    );
+
+    xTaskCreate(
+        print_data_task,
+        "print_data_task",
         4096,
         NULL,
         5,
