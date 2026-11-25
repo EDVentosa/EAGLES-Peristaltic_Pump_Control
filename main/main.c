@@ -19,9 +19,7 @@ static const char *TAG = "PID_CONTROLLER";
 
 // PID settings
 #define PID_LOOP_PERIOD_MS  100
-
-// Desired flow rate
-static float target_flow = 100.0f;
+static float target_pressure = 0.8f;  // Setpoint (SP)
 
 // Stepper motor output limits
 #define MOTOR_MIN_FREQ  0.0f
@@ -103,7 +101,7 @@ void pid_initialize(void)
 // PID Tasks
 void pid_task(void *pvParameters)
 {
-    float measured_flow;
+    float measured_pressure;
     float error;
     float motor_frequency = 0.0f;
 
@@ -111,15 +109,15 @@ void pid_task(void *pvParameters)
 
     while (1)
     {
-        // Read actual flow rate
-        measured_flow = xQueuePeek(
+        // Take pressure measurement from queue
+        measured_pressure = xQueuePeek(
             pressure_queue,
             &pressure_mpa,
             0
         );
 
         // Calculate error
-        error = target_flow - measured_flow;
+        error = target_pressure - measured_pressure;
 
         // Compute PID output
         ESP_ERROR_CHECK(
@@ -132,8 +130,8 @@ void pid_task(void *pvParameters)
         // Print monitoring information
         ESP_LOGI(TAG,
                 "SP: %.2f | PV: %.2f | Error: %.2f | Motor: %.2f Hz",
-                target_flow,
-                measured_flow,
+                target_pressure,
+                measured_pressure,
                 error,
                 motor_frequency);
 
@@ -157,7 +155,7 @@ void sensor_task(void *pvParameters)
             sensor_voltage = pressure_sensor_get_voltage(adc_voltage);      // Compensate for voltage divider
             pressure_mpa = pressure_sensor_get_mpa(sensor_voltage);         // Convert to pressure
 
-            xQueueOverwrite(pressure_queue, &pressure_mpa);
+            xQueueOverwrite(pressure_queue, &pressure_mpa);     //Send MPa pressure to queue
         }
         else
         {
